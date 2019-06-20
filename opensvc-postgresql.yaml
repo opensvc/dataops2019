@@ -1,0 +1,106 @@
+---
+- hosts: localhost
+  become: true
+  remote_user: root
+
+  tasks:
+  - name: Set timezone to Europe/Paris
+    timezone:
+      name: Europe/Paris
+
+  - name: install packages
+    apt:
+      update_cache=no
+      state=latest
+      name={{item}}
+    with_items:
+    - iotop
+    - htop
+    - strace
+    - mlocate
+    - net-tools
+    - psmisc
+    - python3
+    - python3-requests
+    - python-psycopg2
+    - postgresql
+    - libpq-dev
+    when: (ansible_facts['distribution'] == "Ubuntu" ) or
+          (ansible_facts['distribution'] == "Debian" )
+
+  - name: download opensvc latest package
+    get_url:
+      url: http://repo.opensvc.com/deb/current
+      dest: /root/opensvc.latest.deb
+      mode: 0440
+    when: (ansible_facts['distribution'] == "Ubuntu" ) or
+          (ansible_facts['distribution'] == "Debian" )
+
+  - name: Install a .deb package
+    apt:
+      deb: /root/opensvc.latest.deb
+    when: (ansible_facts['distribution'] == "Ubuntu" ) or
+          (ansible_facts['distribution'] == "Debian" )
+
+- hosts: localhost
+  become: yes
+  become_user: postgres
+  gather_facts: no
+  
+  vars:
+    dbname: dataops
+    dbuser: dataopsusr
+    dbpassword: dataopspwd
+    encrypted: true
+ 
+  tasks:
+  - name: ensure database is created
+    postgresql_db: name={{dbname}}
+
+  - name: ensure user has access to database
+    postgresql_user: db={{dbname}} name={{dbuser}} password={{dbpassword}} priv=ALL encrypted={{encrypted}}
+
+  - name: ensure user does not have unnecessary privilege
+    postgresql_user: name={{dbuser}} role_attr_flags=NOSUPERUSER,NOCREATEDB 
+  
+  - name: ensure no other user can access the database
+    postgresql_privs: db={{dbname}} role=PUBLIC type=database priv=ALL state=absent
+
+  - name: ensure postgres listen on all ip adresses
+    copy:
+      dest: "/etc/postgresql/10/main/conf.d/listen-all.conf"
+      content: |
+        listen_addresses = '*'
+
+  - name: allow remote connections
+    lineinfile:
+      dest: /etc/postgresql/10/main/pg_hba.conf
+      regexp: "^hosts+alls+alls+alls+md5$"
+      insertafter: EOF
+      line: "host all all all md5"
+
+- hosts: localhost
+  become: true
+  remote_user: root
+
+  tasks:
+
+  - name: stop postgres
+    command: /usr/bin/pg_ctlcluster --skip-systemctl-redirect -m fast 10-main stop
+
+  - name: start postgres
+    command: /usr/bin/pg_ctlcluster --skip-systemctl-redirect -m fast 10-main start
+
+  - name: disable postgres through systemd
+    systemd:
+      enabled: no
+      state: started
+      name: postgresql
+
+  - name: Change /dumps ownership, group and permissions
+    file:
+      path: /dumps
+      owner: postgres
+      group: postgres
+      mode: '0755'
+
